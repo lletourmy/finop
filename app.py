@@ -3,6 +3,10 @@ import pandas as pd
 import json
 from typing import Dict, List
 import re
+import toml
+import os
+from pathlib import Path
+import snowflake.connector
 
 # Configuration de la page
 st.set_page_config(
@@ -15,52 +19,162 @@ st.title("🔍 SQL Query Optimizer")
 st.markdown("Analysez et optimisez vos requêtes SQL les plus coûteuses avec l'IA")
 
 # Initialisation de la session Snowflake
+@st.cache_data
+def load_snowflake_config():
+    """Charge les connexions disponibles depuis ~/.snowflake/config.toml"""
+    config_path = Path.home() / '.snowflake' / 'config.toml'
+    if config_path.exists():
+        try:
+            config = toml.load(config_path)
+            return config
+        except Exception as e:
+            return None
+    return None
+
 @st.cache_resource
+def create_snowflake_connection(_conn_params):
+    """Crée une connexion Snowflake avec les paramètres fournis"""
+    conn = snowflake.connector.connect(
+        account=_conn_params.get('account'),
+        user=_conn_params.get('user'),
+        password=_conn_params.get('password'),
+        database=_conn_params.get('database'),
+        schema=_conn_params.get('schema'),
+        warehouse=_conn_params.get('warehouse'),
+        role=_conn_params.get('role'),
+        authenticator=_conn_params.get('authenticator', 'snowflake'),
+        client_session_keep_alive=_conn_params.get('client_session_keep_alive', False)
+    )
+
+    # Wrapper pour compatibilité avec l'API Streamlit
+    class SnowflakeConnectionWrapper:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def cursor(self):
+            return self._conn.cursor()
+
+        def close(self):
+            return self._conn.close()
+
+    return SnowflakeConnectionWrapper(conn)
+
 def init_session():
-    """Initialise la session Snowflake depuis Streamlit in Snowflake"""
-    if 'snowpark_session' in st.session_state:
-        return st.session_state.snowpark_session
-    
-    # Dans Streamlit in Snowflake, la session est automatiquement disponible
-    # via st.connection ou snowflake.connector
+    """Initialise la session Snowflake depuis Streamlit in Snowflake ou local"""
+
+    # Vérifier si déjà connecté en mode local
+    if 'snowflake_connection' in st.session_state:
+        return st.session_state['snowflake_connection']
+
+    # Tenter d'abord la connexion Streamlit in Snowflake
     try:
-        # Utilisation de la connexion Streamlit in Snowflake
         conn = st.connection("snowflake")
+        if 'sis_mode_confirmed' not in st.session_state:
+            st.success("✅ Connecté via Streamlit in Snowflake")
+            st.session_state['sis_mode_confirmed'] = True
         return conn
-    except:
+    except Exception as e:
         # Fallback pour développement local
-        st.error("Connexion Snowflake non disponible. Assurez-vous d'être dans Streamlit in Snowflake.")
+        if 'local_mode_shown' not in st.session_state:
+            st.info("📌 Mode développement local - Connexion depuis config.toml")
+            st.session_state['local_mode_shown'] = True
+
+        # Charger les connexions disponibles
+        config = load_snowflake_config()
+        if not config:
+            st.error("❌ Fichier ~/.snowflake/config.toml non trouvé ou invalide")
+            return None
+
+        # Extraire les noms de connexion
+        connection_names = list(config.keys())
+        if not connection_names:
+            st.error("❌ Aucune connexion trouvée dans config.toml")
+            return None
+
+        # Sélection de la connexion via Streamlit
+        st.sidebar.header("🔌 Configuration de connexion")
+        selected_connection = st.sidebar.selectbox(
+            "Choisir une connexion:",
+            connection_names,
+            index=0,
+            key="connection_selector"
+        )
+
+        if not selected_connection:
+            return None
+
+        # Récupérer les paramètres de connexion
+        conn_params = config[selected_connection]
+
+        # Afficher les détails de connexion (sans le mot de passe)
+        st.sidebar.info(f"""
+        **Connexion sélectionnée:** {selected_connection}
+        - **Account:** {conn_params.get('account', 'N/A')}
+        - **User:** {conn_params.get('user', 'N/A')}
+        - **Database:** {conn_params.get('database', 'N/A')}
+        - **Schema:** {conn_params.get('schema', 'N/A')}
+        - **Warehouse:** {conn_params.get('warehouse', 'N/A')}
+        - **Role:** {conn_params.get('role', 'N/A')}
+        """)
+
+        # Bouton pour se connecter
+        if st.sidebar.button("🔗 Se connecter", key="connect_button"):
+            try:
+                # Créer la connexion Snowflake via fonction cachée
+                wrapped_conn = create_snowflake_connection(conn_params)
+                st.sidebar.success(f"✅ Connecté à {selected_connection}")
+                st.session_state['snowflake_connection'] = wrapped_conn
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"❌ Erreur de connexion: {e}")
+                return None
+
+        st.warning("⚠️ Veuillez cliquer sur 'Se connecter' dans la barre latérale")
         return None
 
 def get_expensive_queries():
     """Récupère les requêtes SQL les plus coûteuses"""
     query = """
-    with recent_queries AS (
+    WITH query_details AS (
         SELECT
             warehouse_name,
             warehouse_size,
             user_name,
-            sum(total_elapsed_time) as total_elapsed_time, -- in milliseconds
-            count(*) as cnt,
-            -- Récupérer un QUERY_ID représentatif (le plus long pour cette combinaison)
-            (SELECT QUERY_ID 
-             FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q2
-             WHERE q2.warehouse_name = q1.warehouse_name
-               AND q2.user_name = q1.user_name
-               AND q2.execution_status = 'SUCCESS'
-               AND q2.START_TIME > DATEADD(DAY, -30, CURRENT_TIMESTAMP())
-             ORDER BY q2.total_elapsed_time DESC
-             LIMIT 1) as sample_query_id,
+            query_id,
+            query_text,
+            total_elapsed_time,
+            start_time,
+            end_time,
+            -- Identifier la requête la plus longue par combinaison warehouse/user
             ROW_NUMBER() OVER (
-                PARTITION BY warehouse_name
-                ORDER BY sum(total_elapsed_time) DESC
-            ) AS rank    
-        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY q1
+                PARTITION BY warehouse_name, user_name
+                ORDER BY total_elapsed_time DESC
+            ) AS query_rank
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
         WHERE
             warehouse_name IS NOT NULL
             AND execution_status = 'SUCCESS'
             AND START_TIME > DATEADD(DAY, -30, CURRENT_TIMESTAMP())
-        group by 1, 2, 3
+    ),
+    aggregated_queries AS (
+        SELECT
+            warehouse_name,
+            warehouse_size,
+            user_name,
+            SUM(total_elapsed_time) as total_elapsed_time,
+            COUNT(*) as cnt,
+            -- Prendre le QUERY_ID et QUERY_TEXT de la requête la plus longue
+            MAX(CASE WHEN query_rank = 1 THEN query_id END) as sample_query_id,
+            MAX(CASE WHEN query_rank = 1 THEN query_text END) as sample_query_text,
+            -- Min et Max des dates d'exécution
+            MIN(start_time) as min_start_time,
+            MAX(end_time) as max_end_time,
+            ROW_NUMBER() OVER (
+                PARTITION BY warehouse_name
+                ORDER BY SUM(total_elapsed_time) DESC
+            ) AS rank
+        FROM query_details
+        GROUP BY warehouse_name, warehouse_size, user_name
     )
     SELECT
         warehouse_name,
@@ -68,19 +182,22 @@ def get_expensive_queries():
         user_name,
         cnt,
         sample_query_id,
+        sample_query_text,
+        min_start_time,
+        max_end_time,
         total_elapsed_time / 1000 AS duration_seconds,
-        total_elapsed_time / 1000 / 60 / 24 AS duration_hours,
-        total_elapsed_time / 1000 / 60 / 24 * 
-            CASE 
-                WHEN warehouse_size = 'X-Small' THEN 1 
-                WHEN warehouse_size = 'Small' THEN 2 
-                WHEN warehouse_size = 'Medium' THEN 4 
-                WHEN warehouse_size = 'Large' THEN 8 
-                WHEN warehouse_size = 'X-Large' THEN 16 
+        total_elapsed_time / 1000 / 60 / 60 AS duration_hours,
+        total_elapsed_time / 1000 / 60 / 60 *
+            CASE
+                WHEN warehouse_size = 'X-Small' THEN 1
+                WHEN warehouse_size = 'Small' THEN 2
+                WHEN warehouse_size = 'Medium' THEN 4
+                WHEN warehouse_size = 'Large' THEN 8
+                WHEN warehouse_size = 'X-Large' THEN 16
                 WHEN warehouse_size = '2X-Large' THEN 32
                 ELSE 1
             END AS cost_factor
-    FROM recent_queries
+    FROM aggregated_queries
     WHERE rank <= 20
     ORDER BY duration_seconds DESC
     """
@@ -124,6 +241,8 @@ def get_query_details(query_id: str, conn):
         cursor = conn.cursor()
         cursor.execute(query, (query_id,))
         df = cursor.fetch_pandas_all()
+        # Normaliser les noms de colonnes en minuscules
+        df.columns = df.columns.str.lower()
         return df
     except Exception as e:
         st.error(f"Erreur lors de la récupération des détails de la requête: {str(e)}")
@@ -172,6 +291,8 @@ def get_query_text_by_user_warehouse(user_name: str, warehouse_name: str, conn):
         cursor = conn.cursor()
         cursor.execute(query, (user_name, warehouse_name))
         df = cursor.fetch_pandas_all()
+        # Normaliser les noms de colonnes en minuscules
+        df.columns = df.columns.str.lower()
         return df
     except Exception as e:
         st.error(f"Erreur lors de la récupération du texte de la requête: {str(e)}")
@@ -264,6 +385,9 @@ def get_table_metadata(table_name: str, conn):
         cursor = conn.cursor()
         cursor.execute(query_columns)
         columns_df = cursor.fetch_pandas_all()
+        # Normaliser les noms de colonnes en minuscules
+        if not columns_df.empty:
+            columns_df.columns = columns_df.columns.str.lower()
         metadata['columns'] = columns_df.to_dict('records') if not columns_df.empty else []
         
         # Récupérer les statistiques de la table
@@ -303,6 +427,9 @@ def get_table_metadata(table_name: str, conn):
         
         cursor.execute(query_stats)
         stats_df = cursor.fetch_pandas_all()
+        # Normaliser les noms de colonnes en minuscules
+        if not stats_df.empty:
+            stats_df.columns = stats_df.columns.str.lower()
         metadata['statistics'] = stats_df.to_dict('records')[0] if not stats_df.empty else {}
         
         # Récupérer les clés primaires et index
@@ -333,6 +460,9 @@ def get_table_metadata(table_name: str, conn):
         
         cursor.execute(query_keys)
         keys_df = cursor.fetch_pandas_all()
+        # Normaliser les noms de colonnes en minuscules
+        if not keys_df.empty:
+            keys_df.columns = keys_df.columns.str.lower()
         metadata['constraints'] = keys_df.to_dict('records') if not keys_df.empty else []
         
     except Exception as e:
@@ -457,42 +587,94 @@ if st.button("🔄 Actualiser la liste"):
 try:
     expensive_queries_sql = get_expensive_queries()
     df_queries = conn.cursor().execute(expensive_queries_sql).fetch_pandas_all()
-    
+
+    # Normaliser les noms de colonnes en minuscules (Snowflake retourne en majuscules)
+    df_queries.columns = df_queries.columns.str.lower()
+
     if df_queries.empty:
         st.info("Aucune requête coûteuse trouvée.")
     else:
+        # Convertir les colonnes numériques (Snowflake peut retourner des strings)
+        numeric_cols = ['duration_seconds', 'duration_hours', 'cost_factor', 'cnt']
+        for col in numeric_cols:
+            if col in df_queries.columns:
+                df_queries[col] = pd.to_numeric(df_queries[col], errors='coerce')
+
         # Formatage des données pour l'affichage
         display_df = df_queries.copy()
         display_df['duration_seconds'] = display_df['duration_seconds'].round(2)
         display_df['duration_hours'] = display_df['duration_hours'].round(4)
         display_df['cost_factor'] = display_df['cost_factor'].round(2)
-        
-        st.dataframe(
-            display_df,
+
+        # Formater les dates pour l'affichage
+        if 'min_start_time' in display_df.columns:
+            display_df['min_start_time'] = pd.to_datetime(display_df['min_start_time'])
+        if 'max_end_time' in display_df.columns:
+            display_df['max_end_time'] = pd.to_datetime(display_df['max_end_time'])
+
+        # Créer une version simplifiée pour l'affichage (sans le texte SQL long et sample_query_id)
+        table_display_df = display_df.drop(columns=['sample_query_text', 'sample_query_id'], errors='ignore')
+
+        # Afficher le dataframe avec sélection de ligne
+        st.write("Cliquez sur une ligne pour voir les détails SQL")
+        event = st.dataframe(
+            table_display_df,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="multi-row"
         )
-        
-        # Sélection d'une requête
-        st.subheader("🔍 Sélectionner une requête pour analyse")
-        
+
+        st.write(event.selection)
+        # Afficher les détails SQL si une ligne est sélectionnée
+        if event.selection and len(event.selection.rows) > 0:
+            st.write("Row selected")
+            selected_idx = event.selection.rows[0]
+            selected_row = display_df.iloc[selected_idx]
+
+            st.subheader("📄 Détails de la requête sélectionnée")
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Warehouse", selected_row['warehouse_name'])
+                st.metric("Taille WH", selected_row['warehouse_size'])
+            with col2:
+                st.metric("Utilisateur", selected_row['user_name'])
+                st.metric("Nombre de requêtes", int(selected_row['cnt']))
+            with col3:
+                st.metric("Durée totale", f"{selected_row['duration_seconds']:.2f}s")
+                st.metric("Facteur de coût", f"{selected_row['cost_factor']:.2f}")
+            with col4:
+                if pd.notna(selected_row.get('min_start_time')):
+                    st.metric("Première exécution", selected_row['min_start_time'].strftime('%Y-%m-%d %H:%M'))
+                if pd.notna(selected_row.get('max_end_time')):
+                    st.metric("Dernière exécution", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
+
+            # Afficher le texte SQL
+            if 'sample_query_text' in selected_row and pd.notna(selected_row['sample_query_text']):
+                st.subheader("💻 Code SQL")
+                st.code(selected_row['sample_query_text'], language='sql')
+
+        # Sélection d'une requête pour analyse AI
+        st.subheader("🔍 Analyse AI de la requête")
+
         if len(df_queries) > 0:
             # Créer un identifiant unique pour chaque requête
             df_queries['query_key'] = df_queries.apply(
                 lambda row: f"{row['user_name']}|{row['warehouse_name']}|{row['duration_seconds']:.2f}",
                 axis=1
             )
-            
+
             query_options = df_queries['query_key'].tolist()
             selected_key = st.selectbox(
-                "Choisissez une requête à analyser:",
+                "Choisissez une requête à analyser avec l'IA:",
                 options=query_options,
                 format_func=lambda x: f"{x.split('|')[0]} - {x.split('|')[1]} ({x.split('|')[2]}s)"
             )
-            
+
             if selected_key:
                 selected_row = df_queries[df_queries['query_key'] == selected_key].iloc[0]
-                
+
                 if st.button("🚀 Analyser cette requête"):
                     with st.spinner("Récupération des détails de la requête..."):
                         # Récupérer le texte SQL et les métadonnées d'exécution
@@ -508,23 +690,33 @@ try:
                             )
                         
                         if query_details is not None and not query_details.empty:
+                            # Convertir les colonnes numériques en types appropriés
+                            numeric_cols = ['duration_seconds', 'bytes_scanned', 'bytes_spilled_to_local_storage',
+                                          'bytes_spilled_to_remote_storage', 'partitions_scanned', 'partitions_total',
+                                          'rows_produced', 'rows_inserted', 'rows_updated', 'rows_deleted',
+                                          'compilation_time_seconds', 'execution_time_seconds',
+                                          'queued_time_seconds', 'blocked_time_seconds']
+                            for col in numeric_cols:
+                                if col in query_details.columns:
+                                    query_details[col] = pd.to_numeric(query_details[col], errors='coerce')
+
                             query_detail = query_details.iloc[0]
-                            query_text = query_detail['QUERY_TEXT']
-                            query_id = query_detail['QUERY_ID']
-                            
+                            query_text = query_detail['query_text']
+                            query_id = query_detail['query_id']
+
                             # Afficher les détails de la requête
                             st.subheader("📝 Détails de la requête")
-                            
+
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.metric("Durée d'exécution", f"{query_detail['duration_seconds']:.2f} s")
-                                st.metric("Warehouse", query_detail['WAREHOUSE_NAME'])
-                                st.metric("Taille Warehouse", query_detail['WAREHOUSE_SIZE'])
-                                st.metric("Utilisateur", query_detail['USER_NAME'])
-                            
+                                st.metric("Warehouse", query_detail['warehouse_name'])
+                                st.metric("Taille Warehouse", query_detail['warehouse_size'])
+                                st.metric("Utilisateur", query_detail['user_name'])
+
                             with col2:
-                                st.metric("Bytes scannés", f"{query_detail['BYTES_SCANNED']:,}" if pd.notna(query_detail['BYTES_SCANNED']) else "N/A")
-                                st.metric("Rows produits", f"{query_detail['ROWS_PRODUCED']:,}" if pd.notna(query_detail['ROWS_PRODUCED']) else "N/A")
+                                st.metric("Bytes scannés", f"{query_detail['bytes_scanned']:,}" if pd.notna(query_detail['bytes_scanned']) else "N/A")
+                                st.metric("Rows produits", f"{query_detail['rows_produced']:,}" if pd.notna(query_detail['rows_produced']) else "N/A")
                                 st.metric("Temps de compilation", f"{query_detail['compilation_time_seconds']:.2f} s" if pd.notna(query_detail['compilation_time_seconds']) else "N/A")
                                 st.metric("Temps d'exécution", f"{query_detail['execution_time_seconds']:.2f} s" if pd.notna(query_detail['execution_time_seconds']) else "N/A")
                             
@@ -550,21 +742,21 @@ try:
                                         execution_metadata = {
                                             'query_id': query_id,
                                             'duration_seconds': float(query_detail['duration_seconds']),
-                                            'warehouse_name': query_detail['WAREHOUSE_NAME'],
-                                            'warehouse_size': query_detail['WAREHOUSE_SIZE'],
-                                            'bytes_scanned': int(query_detail['BYTES_SCANNED']) if pd.notna(query_detail['BYTES_SCANNED']) else None,
-                                            'bytes_spilled_local': int(query_detail['BYTES_SPILLED_TO_LOCAL_STORAGE']) if pd.notna(query_detail['BYTES_SPILLED_TO_LOCAL_STORAGE']) else None,
-                                            'bytes_spilled_remote': int(query_detail['BYTES_SPILLED_TO_REMOTE_STORAGE']) if pd.notna(query_detail['BYTES_SPILLED_TO_REMOTE_STORAGE']) else None,
-                                            'partitions_scanned': int(query_detail['PARTITIONS_SCANNED']) if pd.notna(query_detail['PARTITIONS_SCANNED']) else None,
-                                            'partitions_total': int(query_detail['PARTITIONS_TOTAL']) if pd.notna(query_detail['PARTITIONS_TOTAL']) else None,
-                                            'rows_produced': int(query_detail['ROWS_PRODUCED']) if pd.notna(query_detail['ROWS_PRODUCED']) else None,
+                                            'warehouse_name': query_detail['warehouse_name'],
+                                            'warehouse_size': query_detail['warehouse_size'],
+                                            'bytes_scanned': int(query_detail['bytes_scanned']) if pd.notna(query_detail['bytes_scanned']) else None,
+                                            'bytes_spilled_local': int(query_detail['bytes_spilled_to_local_storage']) if pd.notna(query_detail['bytes_spilled_to_local_storage']) else None,
+                                            'bytes_spilled_remote': int(query_detail['bytes_spilled_to_remote_storage']) if pd.notna(query_detail['bytes_spilled_to_remote_storage']) else None,
+                                            'partitions_scanned': int(query_detail['partitions_scanned']) if pd.notna(query_detail['partitions_scanned']) else None,
+                                            'partitions_total': int(query_detail['partitions_total']) if pd.notna(query_detail['partitions_total']) else None,
+                                            'rows_produced': int(query_detail['rows_produced']) if pd.notna(query_detail['rows_produced']) else None,
                                             'compilation_time_seconds': float(query_detail['compilation_time_seconds']) if pd.notna(query_detail['compilation_time_seconds']) else None,
                                             'execution_time_seconds': float(query_detail['execution_time_seconds']) if pd.notna(query_detail['execution_time_seconds']) else None,
                                             'queued_time_seconds': float(query_detail['queued_time_seconds']) if pd.notna(query_detail['queued_time_seconds']) else None,
                                             'blocked_time_seconds': float(query_detail['blocked_time_seconds']) if pd.notna(query_detail['blocked_time_seconds']) else None,
-                                            'start_time': str(query_detail['START_TIME']),
-                                            'end_time': str(query_detail['END_TIME']),
-                                            'execution_status': query_detail['EXECUTION_STATUS']
+                                            'start_time': str(query_detail['start_time']),
+                                            'end_time': str(query_detail['end_time']),
+                                            'execution_status': query_detail['execution_status']
                                         }
                                         
                                         # Appel à Cortex AI
