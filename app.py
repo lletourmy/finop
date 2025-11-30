@@ -530,7 +530,7 @@ Formatte ta réponse de manière claire et structurée avec des sections bien d�
         # Nouvelle syntaxe: SNOWFLAKE.CORTEX.COMPLETE(model_name, prompt_text, options)
         cortex_query = f"""
         SELECT SNOWFLAKE.CORTEX.COMPLETE(
-            'claude-4-5-sonnet',
+            'claude-4-sonnet',
             '{escaped_prompt}'
         ) AS response
         """
@@ -626,7 +626,7 @@ try:
                 use_container_width=True,
                 hide_index=True,
                 on_select="rerun",
-                selection_mode="single-row"
+                selection_mode="single-row" #play all rows without pagination
             )
 
         with col_right:
@@ -655,109 +655,74 @@ try:
 
                 # Bouton pour analyser cette requête avec l'IA
                 if st.button("🚀 Analyser cette requête avec l'IA", use_container_width=True):
-                    with st.spinner("Récupération des détails de la requête..."):
-                        # Récupérer le texte SQL et les métadonnées d'exécution
-                        # Utiliser QUERY_ID si disponible, sinon fallback sur user/warehouse
-                        if 'sample_query_id' in selected_row and pd.notna(selected_row['sample_query_id']):
-                            query_details = get_query_details(selected_row['sample_query_id'], conn)
-                        else:
-                            # Fallback: récupérer par user et warehouse
-                            query_details = get_query_text_by_user_warehouse(
-                                selected_row['user_name'],
-                                selected_row['warehouse_name'],
-                                conn
-                            )
-                        
-                        if query_details is not None and not query_details.empty:
-                            # Convertir les colonnes numériques en types appropriés
-                            numeric_cols = ['duration_seconds', 'bytes_scanned', 'bytes_spilled_to_local_storage',
-                                          'bytes_spilled_to_remote_storage', 'partitions_scanned', 'partitions_total',
-                                          'rows_produced', 'rows_inserted', 'rows_updated', 'rows_deleted',
-                                          'compilation_time_seconds', 'execution_time_seconds',
-                                          'queued_time_seconds', 'blocked_time_seconds']
-                            for col in numeric_cols:
-                                if col in query_details.columns:
-                                    query_details[col] = pd.to_numeric(query_details[col], errors='coerce')
+                    # Utiliser directement les données de selected_row
+                    query_text = selected_row['sample_query_text']
+                    query_id = selected_row.get('sample_query_id', 'N/A')
 
-                            query_detail = query_details.iloc[0]
-                            query_text = query_detail['query_text']
-                            query_id = query_detail['query_id']
+                    # Extraire les tables
+                    with st.spinner("Identification des tables utilisées..."):
+                        tables = extract_tables_from_sql(query_text)
 
-                            # Afficher les détails de la requête
-                            st.subheader("📝 Détails de la requête")
+                    if tables:
+                        # Récupérer les métadonnées des tables
+                        with st.spinner("Récupération des métadonnées des tables..."):
+                            tables_metadata = {}
+                            for table in tables:
+                                tables_metadata[table] = get_table_metadata(table, conn)
 
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Durée d'exécution", f"{query_detail['duration_seconds']:.2f} s")
-                                st.metric("Warehouse", query_detail['warehouse_name'])
-                                st.metric("Taille Warehouse", query_detail['warehouse_size'])
-                                st.metric("Utilisateur", query_detail['user_name'])
+                            # Préparer les métadonnées d'exécution à partir de selected_row
+                            execution_metadata = {
+                                'query_id': query_id,
+                                'duration_seconds': float(selected_row['duration_seconds']),
+                                'warehouse_name': selected_row['warehouse_name'],
+                                'warehouse_size': selected_row['warehouse_size'],
+                                'user_count': int(selected_row['cnt']),
+                                'cost_factor': float(selected_row['cost_factor']),
+                                'min_start_time': str(selected_row['min_start_time']) if pd.notna(selected_row.get('min_start_time')) else None,
+                                'max_end_time': str(selected_row['max_end_time']) if pd.notna(selected_row.get('max_end_time')) else None,
+                                # Note: detailed metrics like bytes_scanned not available in selected_row
+                            }
 
-                            with col2:
-                                st.metric("Bytes scannés", f"{query_detail['bytes_scanned']:,}" if pd.notna(query_detail['bytes_scanned']) else "N/A")
-                                st.metric("Rows produits", f"{query_detail['rows_produced']:,}" if pd.notna(query_detail['rows_produced']) else "N/A")
-                                st.metric("Temps de compilation", f"{query_detail['compilation_time_seconds']:.2f} s" if pd.notna(query_detail['compilation_time_seconds']) else "N/A")
-                                st.metric("Temps d'exécution", f"{query_detail['execution_time_seconds']:.2f} s" if pd.notna(query_detail['execution_time_seconds']) else "N/A")
-                            
-                            st.subheader("💻 Code SQL")
-                            st.code(query_text, language='sql')
-                            
-                            # Extraire les tables
-                            with st.spinner("Identification des tables utilisées..."):
-                                tables = extract_tables_from_sql(query_text)
-                                
-                                if tables:
-                                    st.subheader("📋 Tables identifiées")
-                                    st.write(", ".join(tables))
-                                    
-                                    # Récupérer les métadonnées des tables
-                                    with st.spinner("Récupération des métadonnées des tables..."):
-                                        tables_metadata = {}
-                                        for table in tables:
-                                            st.write(f"Récupération des métadonnées pour: {table}")
-                                            tables_metadata[table] = get_table_metadata(table, conn)
-                                        
-                                        # Préparer les métadonnées d'exécution
-                                        execution_metadata = {
-                                            'query_id': query_id,
-                                            'duration_seconds': float(query_detail['duration_seconds']),
-                                            'warehouse_name': query_detail['warehouse_name'],
-                                            'warehouse_size': query_detail['warehouse_size'],
-                                            'bytes_scanned': int(query_detail['bytes_scanned']) if pd.notna(query_detail['bytes_scanned']) else None,
-                                            'bytes_spilled_local': int(query_detail['bytes_spilled_to_local_storage']) if pd.notna(query_detail['bytes_spilled_to_local_storage']) else None,
-                                            'bytes_spilled_remote': int(query_detail['bytes_spilled_to_remote_storage']) if pd.notna(query_detail['bytes_spilled_to_remote_storage']) else None,
-                                            'partitions_scanned': int(query_detail['partitions_scanned']) if pd.notna(query_detail['partitions_scanned']) else None,
-                                            'partitions_total': int(query_detail['partitions_total']) if pd.notna(query_detail['partitions_total']) else None,
-                                            'rows_produced': int(query_detail['rows_produced']) if pd.notna(query_detail['rows_produced']) else None,
-                                            'compilation_time_seconds': float(query_detail['compilation_time_seconds']) if pd.notna(query_detail['compilation_time_seconds']) else None,
-                                            'execution_time_seconds': float(query_detail['execution_time_seconds']) if pd.notna(query_detail['execution_time_seconds']) else None,
-                                            'queued_time_seconds': float(query_detail['queued_time_seconds']) if pd.notna(query_detail['queued_time_seconds']) else None,
-                                            'blocked_time_seconds': float(query_detail['blocked_time_seconds']) if pd.notna(query_detail['blocked_time_seconds']) else None,
-                                            'start_time': str(query_detail['start_time']),
-                                            'end_time': str(query_detail['end_time']),
-                                            'execution_status': query_detail['execution_status']
-                                        }
-                                        
-                                        # Appel à Cortex AI
-                                        with st.spinner("Analyse par Cortex AI (Claude Sonnet)..."):
-                                            optimization_suggestions = call_cortex_ai(
-                                                query_text,
-                                                execution_metadata,
-                                                tables_metadata,
-                                                conn
-                                            )
-                                            
-                                            if optimization_suggestions:
-                                                st.subheader("✨ Suggestions d'optimisation")
-                                                st.markdown(optimization_suggestions)
-                                            else:
-                                                st.warning("Impossible d'obtenir des suggestions d'optimisation. Vérifiez que Cortex AI est activé dans votre compte Snowflake.")
-                                else:
-                                    st.warning("Aucune table identifiée dans la requête SQL.")
-                        else:
-                            st.error("Impossible de récupérer les détails de la requête sélectionnée.")
+                            # Appel à Cortex AI
+                            with st.spinner("Analyse par Cortex AI (Claude Sonnet)..."):
+                                optimization_suggestions = call_cortex_ai(
+                                    query_text,
+                                    execution_metadata,
+                                    tables_metadata,
+                                    conn
+                                )
+
+                                # Stocker les résultats dans session state pour affichage en-dessous
+                                st.session_state['ai_analysis'] = {
+                                    'tables': tables,
+                                    'suggestions': optimization_suggestions
+                                }
+                    else:
+                        st.session_state['ai_analysis'] = {
+                            'tables': [],
+                            'suggestions': None
+                        }
             else:
                 st.info("👈 Sélectionnez une ligne dans le tableau pour voir le code SQL")
+
+        # Afficher les résultats de l'analyse IA en-dessous des deux colonnes
+        if 'ai_analysis' in st.session_state and st.session_state['ai_analysis'] is not None:
+            st.divider()
+            st.header("🤖 Analyse IA")
+
+            analysis = st.session_state['ai_analysis']
+
+            if analysis['tables']:
+                st.subheader("📋 Tables identifiées")
+                st.write(", ".join(analysis['tables']))
+
+            if analysis['suggestions']:
+                st.subheader("✨ Suggestions d'optimisation")
+                st.markdown(analysis['suggestions'])
+            elif analysis['tables'] is not None and len(analysis['tables']) == 0:
+                st.warning("Aucune table identifiée dans la requête SQL.")
+            elif analysis['suggestions'] is None and analysis['tables']:
+                st.warning("Impossible d'obtenir des suggestions d'optimisation. Vérifiez que Cortex AI est activé dans votre compte Snowflake.")
 
 except Exception as e:
     st.error(f"Erreur lors de l'exécution de la requête: {str(e)}")

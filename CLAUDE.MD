@@ -155,14 +155,18 @@ The single-file design is intentional for SiS deployments where modularity isn't
 #### Main Application Flow
 
 **Main Interface** (Lines 545+)
-1. **Section 1:** Displays list of expensive queries in DataFrame
-2. **Section 2:** Query selection with custom formatting
-3. **Section 3:** Query analysis with:
-   - Execution metrics display
+1. **Two-Column Layout:**
+   - **Left Column:** Interactive dataframe with warehouse, user, query count, and duration
+   - **Right Column:** SQL details panel (displayed when row selected)
+2. **Query Analysis Workflow:**
+   - User clicks row in dataframe to see SQL code
+   - Execution metrics displayed (cost factor, first/last execution times)
    - SQL code view with syntax highlighting
-   - Table identification
-   - Metadata retrieval for each table
-   - AI-powered optimization suggestions
+   - "Analyser cette requête avec l'IA" button triggers:
+     - Table extraction via `extract_tables_from_sql()`
+     - Metadata retrieval for each table via `get_table_metadata()`
+     - AI analysis via `call_cortex_ai()` with execution metadata from selected_row
+     - Display optimization suggestions
 
 ## Application Flow
 
@@ -171,12 +175,11 @@ The single-file design is intentional for SiS deployments where modularity isn't
 #### Streamlit in Snowflake (SiS) Mode
 1. **Initialization:** App starts, automatically connects via `st.connection("snowflake")`
 2. **Data Loading:** "Actualiser la liste" button → `get_expensive_queries()` → Display DataFrame
-3. **Query Selection:** User picks a query from dropdown
-4. **Analysis Trigger:** "Analyser cette requête" button → Multi-step processing:
-   - Retrieve query details via `get_query_details()`
-   - Extract tables via `extract_tables_from_sql()`
+3. **Query Selection:** User clicks on a row in the interactive dataframe
+4. **Analysis Trigger:** "Analyser cette requête avec l'IA" button → Multi-step processing:
+   - Extract tables via `extract_tables_from_sql()` (using SQL text from selected_row)
    - Fetch metadata via `get_table_metadata()` for each table
-   - Call AI via `call_cortex_ai()`
+   - Call AI via `call_cortex_ai()` with execution metadata from selected_row
    - Display results in Streamlit UI
 
 #### Local Development Mode
