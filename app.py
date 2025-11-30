@@ -326,6 +326,11 @@ def extract_tables_from_sql(sql_text: str) -> List[str]:
     
     return sorted(list(tables))
 
+
+@st.cache_data
+def fetch_pandas_all(expensive_queries_sql):
+    return conn.cursor().execute(expensive_queries_sql).fetch_pandas_all()
+
 def get_table_metadata(table_name: str, conn):
     """Récupère les métadonnées d'une table"""
     # Séparer database.schema.table si nécessaire
@@ -520,49 +525,47 @@ Formatte ta réponse de manière claire et structurée avec des sections bien d�
     try:
         # Échapper les apostrophes pour SQL
         escaped_prompt = prompt.replace("'", "''")
-        
+
         # Appel à Cortex AI via SNOWFLAKE.CORTEX.COMPLETE
-        # Format: SNOWFLAKE.CORTEX.COMPLETE(model_name, messages_array)
+        # Nouvelle syntaxe: SNOWFLAKE.CORTEX.COMPLETE(model_name, prompt_text, options)
         cortex_query = f"""
         SELECT SNOWFLAKE.CORTEX.COMPLETE(
-            'claude-sonnet',
-            ARRAY_CONSTRUCT(
-                OBJECT_CONSTRUCT(
-                    'role', 'user',
-                    'content', '{escaped_prompt}'
-                )
-            )
+            'claude-4-5-sonnet',
+            '{escaped_prompt}'
         ) AS response
         """
-        
+
         cursor = conn.cursor()
         cursor.execute(cortex_query)
         result = cursor.fetchone()
         
         if result and result[0]:
-            # Le résultat de CORTEX.COMPLETE est généralement un objet JSON
+            # Le résultat de CORTEX.COMPLETE est directement le texte généré
             response = result[0]
-            
-            # Si c'est une chaîne JSON, la parser
+
+            # Si c'est déjà une string, la retourner directement
             if isinstance(response, str):
-                try:
-                    response = json.loads(response)
-                except:
-                    pass
-            
-            # Extraire le contenu selon le format de réponse
+                return response
+
+            # Si c'est un dict, essayer d'extraire le contenu
             if isinstance(response, dict):
-                # Format possible: {'choices': [{'message': {'content': '...'}}]}
+                # Vérifier différents formats possibles
                 if 'choices' in response and len(response['choices']) > 0:
                     choice = response['choices'][0]
-                    if 'message' in choice and 'content' in choice['message']:
-                        return choice['message']['content']
-                # Format possible: {'content': '...'}
+                    if isinstance(choice, dict):
+                        if 'message' in choice and 'content' in choice['message']:
+                            return choice['message']['content']
+                        if 'text' in choice:
+                            return choice['text']
                 if 'content' in response:
                     return response['content']
-                # Sinon, convertir tout le dict en string
+                if 'text' in response:
+                    return response['text']
+
+                # Si rien n'a fonctionné, retourner le JSON formaté
                 return json.dumps(response, indent=2, ensure_ascii=False)
-            
+
+            # Dernier recours: convertir en string
             return str(response)
         else:
             return None
@@ -586,8 +589,7 @@ if st.button("🔄 Actualiser la liste"):
 
 try:
     expensive_queries_sql = get_expensive_queries()
-    df_queries = conn.cursor().execute(expensive_queries_sql).fetch_pandas_all()
-
+    df_queries = fetch_pandas_all(expensive_queries_sql)
     # Normaliser les noms de colonnes en minuscules (Snowflake retourne en majuscules)
     df_queries.columns = df_queries.columns.str.lower()
 
@@ -612,70 +614,47 @@ try:
         if 'max_end_time' in display_df.columns:
             display_df['max_end_time'] = pd.to_datetime(display_df['max_end_time'])
 
-        # Créer une version simplifiée pour l'affichage (sans le texte SQL long et sample_query_id)
-        table_display_df = display_df.drop(columns=['sample_query_text', 'sample_query_id'], errors='ignore')
+        # Créer une version simplifiée pour l'affichage avec seulement les colonnes demandées
+        table_display_df = display_df[['warehouse_name', 'warehouse_size', 'user_name', 'cnt', 'duration_seconds']].copy()
 
-        # Afficher le dataframe avec sélection de ligne
-        st.write("Cliquez sur une ligne pour voir les détails SQL")
-        event = st.dataframe(
-            table_display_df,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="multi-row"
-        )
+        # Layout en deux colonnes
+        col_left, col_right = st.columns([1, 1])
 
-        st.write(event.selection)
-        # Afficher les détails SQL si une ligne est sélectionnée
-        if event.selection and len(event.selection.rows) > 0:
-            st.write("Row selected")
-            selected_idx = event.selection.rows[0]
-            selected_row = display_df.iloc[selected_idx]
-
-            st.subheader("📄 Détails de la requête sélectionnée")
-
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Warehouse", selected_row['warehouse_name'])
-                st.metric("Taille WH", selected_row['warehouse_size'])
-            with col2:
-                st.metric("Utilisateur", selected_row['user_name'])
-                st.metric("Nombre de requêtes", int(selected_row['cnt']))
-            with col3:
-                st.metric("Durée totale", f"{selected_row['duration_seconds']:.2f}s")
-                st.metric("Facteur de coût", f"{selected_row['cost_factor']:.2f}")
-            with col4:
-                if pd.notna(selected_row.get('min_start_time')):
-                    st.metric("Première exécution", selected_row['min_start_time'].strftime('%Y-%m-%d %H:%M'))
-                if pd.notna(selected_row.get('max_end_time')):
-                    st.metric("Dernière exécution", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
-
-            # Afficher le texte SQL
-            if 'sample_query_text' in selected_row and pd.notna(selected_row['sample_query_text']):
-                st.subheader("💻 Code SQL")
-                st.code(selected_row['sample_query_text'], language='sql')
-
-        # Sélection d'une requête pour analyse AI
-        st.subheader("🔍 Analyse AI de la requête")
-
-        if len(df_queries) > 0:
-            # Créer un identifiant unique pour chaque requête
-            df_queries['query_key'] = df_queries.apply(
-                lambda row: f"{row['user_name']}|{row['warehouse_name']}|{row['duration_seconds']:.2f}",
-                axis=1
+        with col_left:
+            event = st.dataframe(
+                table_display_df,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row"
             )
 
-            query_options = df_queries['query_key'].tolist()
-            selected_key = st.selectbox(
-                "Choisissez une requête à analyser avec l'IA:",
-                options=query_options,
-                format_func=lambda x: f"{x.split('|')[0]} - {x.split('|')[1]} ({x.split('|')[2]}s)"
-            )
+        with col_right:
+            st.subheader("💻 Détails SQL")
+            # Afficher les détails SQL si une ligne est sélectionnée
+            if event.selection and len(event.selection.rows) > 0:
+                selected_idx = event.selection.rows[0]
+                selected_row = display_df.iloc[selected_idx]
 
-            if selected_key:
-                selected_row = df_queries[df_queries['query_key'] == selected_key].iloc[0]
+                # Métriques complémentaires
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Facteur de coût", f"{selected_row['cost_factor']:.2f}")
+                with col2:
+                    if pd.notna(selected_row.get('min_start_time')):
+                        st.metric("Première exec.", selected_row['min_start_time'].strftime('%Y-%m-%d %H:%M'))
+                with col3:
+                    if pd.notna(selected_row.get('max_end_time')):
+                        st.metric("Dernière exec.", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
 
-                if st.button("🚀 Analyser cette requête"):
+                # Afficher le texte SQL
+                if 'sample_query_text' in selected_row and pd.notna(selected_row['sample_query_text']):
+                    st.code(selected_row['sample_query_text'], language='sql', line_numbers=True)
+                else:
+                    st.info("Aucun texte SQL disponible pour cette requête")
+
+                # Bouton pour analyser cette requête avec l'IA
+                if st.button("🚀 Analyser cette requête avec l'IA", use_container_width=True):
                     with st.spinner("Récupération des détails de la requête..."):
                         # Récupérer le texte SQL et les métadonnées d'exécution
                         # Utiliser QUERY_ID si disponible, sinon fallback sur user/warehouse
@@ -777,7 +756,9 @@ try:
                                     st.warning("Aucune table identifiée dans la requête SQL.")
                         else:
                             st.error("Impossible de récupérer les détails de la requête sélectionnée.")
-                            
+            else:
+                st.info("👈 Sélectionnez une ligne dans le tableau pour voir le code SQL")
+
 except Exception as e:
     st.error(f"Erreur lors de l'exécution de la requête: {str(e)}")
     st.exception(e)
