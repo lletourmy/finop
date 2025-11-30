@@ -4,7 +4,7 @@ Application Streamlit déployée dans Snowflake pour analyser et optimiser les r
 
 ## 🎯 Fonctionnalités
 
-- **Identification des requêtes coûteuses** : Récupère automatiquement les 20 requêtes SQL les plus coûteuses des 30 derniers jours
+- **Identification des requêtes les plus coûteuses** : Récupère automatiquement les 20 requêtes SQL les plus coûteuses des 30 derniers jours
 - **Analyse détaillée** : Pour chaque requête sélectionnée, affiche :
   - Le code SQL complet
   - Les métadonnées d'exécution (durée, bytes scannés, partitions, etc.)
