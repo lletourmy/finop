@@ -38,71 +38,35 @@ class QueryOptimizer:
             DataFrame avec les requêtes coûteuses ou None si erreur
         """
         query = """
-        WITH query_details AS (
-            SELECT
-                warehouse_name,
-                warehouse_size,
-                user_name,
-                query_id,
-                query_text,
-                total_elapsed_time,
-                start_time,
-                end_time,
-                -- Identifier la requête la plus longue par combinaison warehouse/user
-                ROW_NUMBER() OVER (
-                    PARTITION BY warehouse_name, user_name
-                    ORDER BY total_elapsed_time DESC
-                ) AS query_rank
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE
-                warehouse_name IS NOT NULL
-                AND execution_status = 'SUCCESS'
-                AND START_TIME > DATEADD(DAY, -30, CURRENT_TIMESTAMP())
-        ),
-        aggregated_queries AS (
-            SELECT
-                warehouse_name,
-                warehouse_size,
-                user_name,
-                SUM(total_elapsed_time) as total_elapsed_time,
-                COUNT(*) as cnt,
-                -- Prendre le QUERY_ID et QUERY_TEXT de la requête la plus longue
-                MAX(CASE WHEN query_rank = 1 THEN query_id END) as sample_query_id,
-                MAX(CASE WHEN query_rank = 1 THEN query_text END) as sample_query_text,
-                -- Min et Max des dates d'exécution
-                MIN(start_time) as min_start_time,
-                MAX(end_time) as max_end_time,
-                ROW_NUMBER() OVER (
-                    PARTITION BY warehouse_name
-                    ORDER BY SUM(total_elapsed_time) DESC
-                ) AS rank
-            FROM query_details
-            GROUP BY warehouse_name, warehouse_size, user_name
-        )
         SELECT
             warehouse_name,
             warehouse_size,
             user_name,
-            cnt,
-            sample_query_id,
-            sample_query_text,
-            min_start_time,
-            max_end_time,
-            total_elapsed_time / 1000 AS duration_seconds,
-            total_elapsed_time / 1000 / 60 / 60 AS duration_hours,
-            total_elapsed_time / 1000 / 60 / 60 *
-                CASE
-                    WHEN warehouse_size = 'X-Small' THEN 1
-                    WHEN warehouse_size = 'Small' THEN 2
-                    WHEN warehouse_size = 'Medium' THEN 4
-                    WHEN warehouse_size = 'Large' THEN 8
-                    WHEN warehouse_size = 'X-Large' THEN 16
-                    WHEN warehouse_size = '2X-Large' THEN 32
+            COUNT(*) as cnt,
+            MAX(query_id) as sample_query_id,
+            MAX(query_text) as sample_query_text,
+            MIN(start_time) as min_start_time,
+            MAX(end_time) as max_end_time,
+            SUM(total_elapsed_time) / 1000 AS duration_seconds,
+            SUM(total_elapsed_time) / 1000 / 60 / 60 AS duration_hours,
+            SUM(total_elapsed_time) / 1000 / 60 / 60 *
+                CASE warehouse_size
+                    WHEN 'X-Small' THEN 1
+                    WHEN 'Small' THEN 2
+                    WHEN 'Medium' THEN 4
+                    WHEN 'Large' THEN 8
+                    WHEN 'X-Large' THEN 16
+                    WHEN '2X-Large' THEN 32
                     ELSE 1
                 END AS cost_factor
-        FROM aggregated_queries
-        WHERE rank <= 20
+        FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
+        WHERE
+            warehouse_name IS NOT NULL
+            AND execution_status = 'SUCCESS'
+            AND START_TIME > DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+        GROUP BY warehouse_name, warehouse_size, user_name
         ORDER BY duration_seconds DESC
+        LIMIT 30
         """
 
         return self.connector.execute_query(query)
