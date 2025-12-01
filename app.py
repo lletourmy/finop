@@ -126,7 +126,7 @@ try:
                     st.info("Aucun texte SQL disponible pour cette requête")
 
                 # Bouton pour analyser cette requête avec l'IA
-                if st.button("🚀 Analyser cette requête avec l'IA", use_container_width=True):
+                if st.button("🚀 Optimisation IA", use_container_width=True):
                     # Utiliser directement les données de selected_row
                     query_text = selected_row['sample_query_text']
                     query_id = selected_row.get('sample_query_id', 'N/A')
