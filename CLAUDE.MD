@@ -18,36 +18,60 @@ This application helps Snowflake users identify performance bottlenecks and opti
 
 ## Architecture
 
-### Layered Architecture
+### Layered Architecture (Refactored)
 
 ```
-User Interface Layer (Streamlit)
+User Interface Layer (Streamlit - app.py)
         ↓
-Data Retrieval Layer (Snowflake Query Functions)
+Business Logic Layer (QueryOptimizer class)
         ↓
-Data Processing Layer (SQL Parsing, Metadata Extraction)
-        ↓
-AI Analysis Layer (Cortex AI / Claude Sonnet)
+Data Access Layer (SnowflakeConnector class)
         ↓
 Snowflake Backend (Account Usage, Information Schema, Cortex API)
 ```
 
+### Class-Based Architecture
+
+The application has been refactored into a modular, class-based architecture:
+
+1. **SnowflakeConnector** (`snowflake_connector.py`):
+   - Manages Snowflake connections (SiS and local modes)
+   - Executes SQL queries
+   - Handles Cortex AI calls
+   - Provides connection abstraction
+
+2. **QueryOptimizer** (`query_optimizer.py`):
+   - Retrieves expensive queries
+   - Extracts table names from SQL
+   - Fetches table metadata
+   - Builds optimization prompts
+   - Orchestrates query optimization workflow
+
+3. **Streamlit UI** (`app.py`):
+   - User interface and interaction
+   - Data visualization
+   - Session state management
+   - Coordinates connector and optimizer
+
 ### Deployment Context
 
-This is a **single-file application** designed for **Streamlit in Snowflake** (native integration) with support for **local development**. The application automatically detects the environment and adapts:
+This application supports both **Streamlit in Snowflake (SiS)** and **local development**:
 
 - **Streamlit in Snowflake (SiS):** Uses native `st.connection("snowflake")` for automatic authentication
 - **Local Development:** Reads connection parameters from `~/.snowflake/config.toml` and provides a UI for connection selection
 
-The single-file design is intentional for SiS deployments where modularity isn't required.
+The modular class-based design improves maintainability, testability, and code reusability.
 
 ## Project Structure
 
 ```
 /
-├── app.py                  # Main application (single-file Streamlit app)
-├── README.md               # Project documentation (French)
-├── requirements.txt        # Python dependencies
+├── app.py                      # Main Streamlit application (refactored)
+├── snowflake_connector.py      # Snowflake connection and query execution
+├── query_optimizer.py          # Query optimization business logic
+├── app_old.py                  # Backup of original single-file app
+├── README.md                   # Project documentation (French)
+├── requirements.txt            # Python dependencies
 ├── CLAUDE.MD              # This file
 ├── .gitignore             # Git configuration
 └── .git/                  # Version control
@@ -74,24 +98,29 @@ The single-file design is intentional for SiS deployments where modularity isn't
 
 ## Key Components
 
-### Core Functions (app.py)
+### Class: SnowflakeConnector (snowflake_connector.py)
 
-#### Connection Management Functions
+This class encapsulates all Snowflake connection and data access logic.
 
-**`load_snowflake_config()`** (Lines 22-32)
+#### Methods
+
+**`__init__(connection=None)`**
+- Initializes the connector with optional existing connection
+
+**`load_config_file()` (static, cached)**
 - Loads available Snowflake connections from `~/.snowflake/config.toml`
 - Returns dictionary of connection configurations
 - Uses `@st.cache_data` for performance
 - Error handling for missing or invalid config files
 
-**`create_snowflake_connection(_conn_params)`** (Lines 34-60)
+**`create_connection(_conn_params)` (static, cached)**
 - Creates a Snowflake connection with provided parameters
 - Uses `@st.cache_resource` for connection pooling
 - Wraps `snowflake.connector.connect()` in compatibility class
 - Returns `SnowflakeConnectionWrapper` for API compatibility
 
-**`init_session()`** (Lines 62-133)
-- **Dual-mode connection initialization (NO cache decorator to allow widgets):**
+**`init_connection()`**
+- Dual-mode connection initialization:
   - **SiS Mode:** Uses `st.connection("snowflake")` for native Streamlit in Snowflake
   - **Local Mode:** Loads connections from `~/.snowflake/config.toml` and provides UI for selection
 - Features for local development:
@@ -100,103 +129,145 @@ The single-file design is intentional for SiS deployments where modularity isn't
   - Shows connection details (account, user, database, schema, warehouse, role)
   - Provides "Connect" button to establish connection
   - Stores connection in `st.session_state` for persistence
-  - Calls `create_snowflake_connection()` for cached connection creation
   - Uses `st.rerun()` after successful connection
 - Graceful fallback between environments
-- Status messages only shown once per session
 
-#### Data Collection Functions
+**`get_connection()`**
+- Returns the current active connection
 
-**`get_expensive_queries()`** (Lines 135-187)
+**`execute_query(query, params=None)`**
+- Executes a SQL query and returns a pandas DataFrame
+- Supports parameterized queries for security
+- Normalizes column names to lowercase
+- Error handling with Streamlit error messages
+
+**`call_cortex_ai(prompt, model='claude-3-5-sonnet')`**
+- Calls Snowflake Cortex AI with a prompt
+- Escapes apostrophes for SQL injection prevention
+- Returns AI-generated response text
+- Error handling for Cortex AI failures
+
+### Class: QueryOptimizer (query_optimizer.py)
+
+This class contains all business logic for query optimization.
+
+#### Methods
+
+**`__init__(connector: SnowflakeConnector)`**
+- Initializes the optimizer with a SnowflakeConnector instance
+
+**`get_expensive_queries()`**
 - Identifies top 20 most expensive queries
 - Filters: Last 30 days, successful executions only
 - Partitions by warehouse, ranks by total elapsed time
 - Calculates cost factors based on warehouse size
 - Returns: warehouse name, user, duration, cost metrics, sample query ID
 
-**`get_query_details(query_id, conn)`** (Lines 189-230)
+**`get_query_details(query_id)`**
 - Retrieves comprehensive metadata for a specific query by ID
 - Includes: execution times, memory spills, partition scans, row counts
 - Provides timing breakdown (compilation, execution, queued, blocked)
 
-**`get_query_text_by_user_warehouse(user_name, warehouse_name, conn)`** (Lines 232-278)
-- Fallback function for when query ID isn't available
-- Retrieves most expensive query for a user-warehouse combination
-- Last 30 days, successful executions only
-
-#### Data Processing Functions
-
-**`extract_tables_from_sql(sql_text)`** (Lines 280-306)
+**`extract_tables_from_sql(sql_text)` (static)**
 - Uses regex patterns to parse SQL and identify table names
 - Supports formats: `database.schema.table`, `schema.table`, `table`
 - Handles backticks and quoted identifiers
 - Filters out SQL keywords and aliases
 - Returns sorted list of unique table names
 
-**`get_table_metadata(table_name, conn)`** (Lines 308-442)
-- Queries `INFORMATION_SCHEMA.COLUMNS` for column definitions
-- Retrieves `INFORMATION_SCHEMA.TABLES` for statistics (row count, bytes, retention)
-- Queries `INFORMATION_SCHEMA.TABLE_CONSTRAINTS` for constraints/keys
-- Returns comprehensive metadata dictionary
-- Includes error handling with warnings
+**`get_table_metadata(table_name)`**
+- Retrieves metadata for a specific table
+- Queries: COLUMNS, TABLES, TABLE_CONSTRAINTS from INFORMATION_SCHEMA
+- Returns dictionary with: columns, statistics, constraints
+- Error handling with warnings for missing tables
 
-#### AI Analysis Function
-
-**`call_cortex_ai(query_text, execution_metadata, tables_metadata, conn)`** (Lines 444-543)
-- Constructs detailed prompt with query, execution stats, and metadata
-- Calls `SNOWFLAKE.CORTEX.COMPLETE` with Claude Sonnet model
-- Handles JSON response parsing
-- Structures prompt with three main sections:
+**`build_optimization_prompt(query_text, execution_metadata, tables_metadata)`**
+- Constructs the optimization prompt for Cortex AI
+- Includes: SQL query, execution metrics, table metadata
+- Structured with three main sections:
   1. SQL optimizations (rewrites, JOINs, WHERE clauses, clustering)
   2. Warehouse optimizations (size, multi-clustering, auto-suspend)
   3. General best practices
-- Returns formatted optimization suggestions
+- Returns formatted prompt string
 
-#### Main Application Flow
+**`optimize_query(query_text, execution_metadata, tables_metadata, model='claude-3-5-sonnet')`**
+- Main orchestration method for query optimization
+- Builds prompt using `build_optimization_prompt()`
+- Calls Cortex AI via connector
+- Returns optimization suggestions
 
-**Main Interface** (Lines 545+)
-1. **Two-Column Layout:**
+### Main Application (app.py)
+
+The Streamlit application coordinates the UI and uses the classes above.
+
+#### Application Structure
+
+**Initialization:**
+- Configures Streamlit page (title, icon, layout)
+- Creates `SnowflakeConnector` instance using `@st.cache_resource`
+- Initializes connection via `connector.init_connection()`
+- Creates `QueryOptimizer` instance with the connector
+- Stops execution if no connection available
+
+**Main Interface:**
+1. **Data Loading Section:**
+   - "Actualiser la liste" button to refresh queries
+   - Fetches expensive queries via `optimizer.get_expensive_queries()`
+   - Stores results in `st.session_state['df_queries']`
+   - Converts numeric columns and datetime fields
+
+2. **Two-Column Layout:**
    - **Left Column:** Interactive dataframe with warehouse, user, query count, and duration
    - **Right Column:** SQL details panel (displayed when row selected)
-2. **Query Analysis Workflow:**
-   - User clicks row in dataframe to see SQL code
-   - Execution metrics displayed (cost factor, first/last execution times)
-   - SQL code view with syntax highlighting
-   - "Analyser cette requête avec l'IA" button triggers:
-     - Table extraction via `extract_tables_from_sql()`
-     - Metadata retrieval for each table via `get_table_metadata()`
-     - AI analysis via `call_cortex_ai()` with execution metadata from selected_row
-     - Display optimization suggestions
+     - Shows cost factor, first/last execution times
+     - Displays SQL code with syntax highlighting
+     - "Analyser cette requête avec l'IA" button
+
+3. **AI Analysis Section (below columns):**
+   - Shows tables identified
+   - Displays optimization suggestions from Cortex AI
+   - Results stored in `st.session_state['ai_analysis']`
+
+**Query Analysis Workflow:**
+- User clicks row in dataframe to see SQL code
+- Clicks "Analyser cette requête avec l'IA" button
+- Process:
+  1. Extract tables via `optimizer.extract_tables_from_sql()`
+  2. Fetch metadata via `optimizer.get_table_metadata()` for each table
+  3. Build execution metadata from selected row
+  4. Call `optimizer.optimize_query()` with all context
+  5. Store and display results below the two-column layout
 
 ## Application Flow
 
 ### User Interaction Flow
 
 #### Streamlit in Snowflake (SiS) Mode
-1. **Initialization:** App starts, automatically connects via `st.connection("snowflake")`
-2. **Data Loading:** "Actualiser la liste" button → `get_expensive_queries()` → Display DataFrame
+1. **Initialization:**
+   - `SnowflakeConnector` initialized
+   - Automatically connects via `st.connection("snowflake")`
+   - `QueryOptimizer` created with connector
+2. **Data Loading:**
+   - "Actualiser la liste" button clicked
+   - `optimizer.get_expensive_queries()` fetches data
+   - Display DataFrame in left column
 3. **Query Selection:** User clicks on a row in the interactive dataframe
 4. **Analysis Trigger:** "Analyser cette requête avec l'IA" button → Multi-step processing:
-   - Extract tables via `extract_tables_from_sql()` (using SQL text from selected_row)
-   - Fetch metadata via `get_table_metadata()` for each table
-   - Call AI via `call_cortex_ai()` with execution metadata from selected_row
-   - Display results in Streamlit UI
+   - Extract tables via `optimizer.extract_tables_from_sql()`
+   - Fetch metadata via `optimizer.get_table_metadata()` for each table
+   - Call `optimizer.optimize_query()` with execution metadata
+   - Display results below two-column layout
 
 #### Local Development Mode
-1. **Initialization:** App detects local environment, loads `~/.snowflake/config.toml`
+1. **Initialization:**
+   - `SnowflakeConnector` detects local environment
+   - Loads `~/.snowflake/config.toml`
 2. **Connection Selection:** User selects connection from sidebar dropdown
-3. **Connection Details:** Sidebar displays connection parameters (account, user, database, etc.)
-4. **Connect:** User clicks "Se connecter" button to establish connection
+3. **Connection Details:** Sidebar displays connection parameters
+4. **Connect:** User clicks "Se connecter" button
+   - `connector.create_connection()` establishes connection
+   - `QueryOptimizer` created with connector
 5. **Data Loading & Analysis:** Same flow as SiS mode (steps 2-4 above)
-
-### Key Control Flow Points
-
-```python
-# Line 448: Check conn is not None (st.stop() if not)
-# Line 461: Check if df_queries is empty
-# Line 500: Check if sample_query_id exists
-# Line 538: Check if tables extracted successfully
-```
 
 ## Design Patterns & Conventions
 
@@ -204,10 +275,13 @@ The single-file design is intentional for SiS deployments where modularity isn't
 
 | Pattern | Usage | Example |
 |---------|-------|---------|
-| **Caching** | Performance optimization | `@st.cache_resource` for session init |
+| **Class-Based Architecture** | Separation of concerns | SnowflakeConnector (data access), QueryOptimizer (business logic) |
+| **Dependency Injection** | Loose coupling | QueryOptimizer receives SnowflakeConnector instance |
+| **Caching** | Performance optimization | `@st.cache_resource` for connector, `@st.cache_data` for config |
 | **Error Handling** | Graceful degradation | Try-except with Streamlit warnings/errors |
 | **Lazy Loading** | User-driven data fetching | Tables only queried when "Analyze" button clicked |
 | **Metadata Enrichment** | Context for AI analysis | Collecting execution stats + table stats before AI call |
+| **Static Methods** | Utility functions | `extract_tables_from_sql()`, `load_config_file()` |
 
 ### SQL Patterns
 
@@ -301,19 +375,21 @@ streamlit run app.py
 
 ### Strengths
 
+- **Modular Class-Based Architecture:** Clean separation between data access and business logic
 - **Dual Environment Support:** Seamless operation in both SiS and local development
-- Clean separation of concerns (data retrieval, processing, AI, UI)
-- Robust error handling with user-friendly messages
-- Support for flexible table naming conventions
-- Intelligent prompt engineering for Claude Sonnet
-- Performance optimizations (caching, lazy loading)
-- Interactive connection management for local development
-- Multiple connection profiles supported via TOML configuration
+- **Testability:** Classes can be unit tested independently
+- **Reusability:** SnowflakeConnector and QueryOptimizer can be used in other projects
+- **Maintainability:** Clear separation of concerns makes code easier to modify
+- **Robust error handling:** User-friendly messages throughout
+- **Support for flexible table naming conventions:** Handles various SQL patterns
+- **Intelligent prompt engineering:** Structured prompts for Claude Sonnet
+- **Performance optimizations:** Caching, lazy loading, session state management
+- **Interactive connection management:** Easy local development setup
+- **Multiple connection profiles:** TOML configuration for different environments
 
 ### Limitations & Considerations
 
 - Regex-based table extraction may miss complex SQL patterns (CTEs, subqueries)
-- Single-file design limits reusability (but intentional for SiS)
 - Hardcoded French language (adaptable for i18n if needed)
 - No persistent storage of analysis results
 - Depends on Cortex AI availability and quota
@@ -324,29 +400,40 @@ streamlit run app.py
 
 ### Making Changes
 
-1. **Read First:** Always read `app.py` before making modifications
-2. **Test in SiS:** This app is designed for Streamlit in Snowflake, test in that environment
-3. **Maintain Single File:** Keep the single-file architecture for SiS deployment simplicity
+1. **Understand the Architecture:** Review the class structure before modifying
+2. **Modify the Right Class:**
+   - **Connection/Query changes:** Update `SnowflakeConnector`
+   - **Business logic changes:** Update `QueryOptimizer`
+   - **UI changes:** Update `app.py`
+3. **Test Both Environments:** Test in both SiS and local development modes
 4. **French UI:** Maintain French language for UI elements unless internationalizing
 5. **Error Handling:** Always include try-except blocks with user-friendly messages
+6. **Type Hints:** Add type hints for new methods
 
 ### Common Modification Scenarios
 
 **Adding New Query Metrics:**
-- Modify `get_query_details()` to add columns from `QUERY_HISTORY`
-- Update display logic in main interface section
+- Modify `get_expensive_queries()` SQL in `QueryOptimizer` class
+- Add columns from `QUERY_HISTORY`
+- Update display logic in `app.py`
 
 **Changing AI Model:**
-- Modify model name in `call_cortex_ai()` function
-- Adjust prompt if model has different capabilities
+- Modify default model parameter in `QueryOptimizer.optimize_query()` method
+- Adjust prompt in `build_optimization_prompt()` if model has different capabilities
 
 **Adding Table Statistics:**
-- Extend `get_table_metadata()` to query additional `INFORMATION_SCHEMA` views
-- Update metadata display in main interface
+- Extend `QueryOptimizer.get_table_metadata()` method
+- Query additional `INFORMATION_SCHEMA` views
+- Update metadata display in `app.py`
 
 **Supporting Additional SQL Patterns:**
-- Add regex patterns to `extract_tables_from_sql()`
+- Add regex patterns to `QueryOptimizer.extract_tables_from_sql()` static method
 - Test with complex SQL examples
+
+**Adding New Connector Method:**
+- Add method to `SnowflakeConnector` class
+- Follow existing patterns (error handling, DataFrame normalization)
+- Update CLAUDE.MD documentation
 
 ## Deployment
 
@@ -359,11 +446,22 @@ streamlit run app.py
 
 ### Deployment Steps
 
-1. Upload `app.py` to Snowflake stage or use SiS file upload
+**For Streamlit in Snowflake:**
+1. Upload all Python files to Snowflake stage:
+   - `app.py`
+   - `snowflake_connector.py`
+   - `query_optimizer.py`
 2. Install dependencies from `requirements.txt`
 3. Create Streamlit app in Snowflake UI
 4. Grant required permissions to the app's role
 5. Launch and test
+
+**For Local Development:**
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Create `~/.snowflake/config.toml` with connection parameters
+4. Run: `streamlit run app.py`
+5. Select connection and click "Se connecter"
 
 ## Troubleshooting
 
