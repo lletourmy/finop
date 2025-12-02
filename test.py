@@ -7,7 +7,7 @@ def sql(cursor, sql, msg):
     cursor.execute(sql)
     print(pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description]))
     
-p = toml.load(Path.home() / '.snowflake' / 'config.toml')['clarins_cost']
+p = toml.load(Path.home() / '.snowflake' / 'config.toml')['default']
 for key in p:
     print(f"{key} : {p[key]}")
 print("Connecting...")
