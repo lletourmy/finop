@@ -101,32 +101,32 @@ class SnowflakeConnector:
         try:
             conn = st.connection("snowflake")
             if 'sis_mode_confirmed' not in st.session_state:
-                st.success("✅ Connecté via Streamlit in Snowflake")
+                st.success("✅ Connected via Streamlit in Snowflake")
                 st.session_state['sis_mode_confirmed'] = True
             self._connection = conn
             return conn
         except Exception as e:
             # Fallback pour développement local
             if 'local_mode_shown' not in st.session_state:
-                st.info("📌 Mode développement local - Connexion depuis config.toml")
+                st.info("📌 Local development mode - Connection from config.toml")
                 st.session_state['local_mode_shown'] = True
 
             # Charger les connexions disponibles
             config = self.load_config_file()
             if not config:
-                st.error("❌ Fichier ~/.snowflake/config.toml non trouvé ou invalide")
+                st.error("❌ File ~/.snowflake/config.toml not found or invalid")
                 return None
 
             # Extraire les noms de connexion
             connection_names = list(config.keys())
             if not connection_names:
-                st.error("❌ Aucune connexion trouvée dans config.toml")
+                st.error("❌ No connection found in config.toml")
                 return None
 
             # Sélection de la connexion via Streamlit
-            st.sidebar.header("🔌 Configuration de connexion")
+            st.sidebar.header("🔌 Connection configuration")
             selected_connection = st.sidebar.selectbox(
-                "Choisir une connexion:",
+                "Select a connection:",
                 connection_names,
                 index=0,
                 key="connection_selector"
@@ -134,7 +134,7 @@ class SnowflakeConnector:
 
             # Afficher les détails de la connexion
             conn_params = config[selected_connection]
-            st.sidebar.write("**Détails de la connexion:**")
+            st.sidebar.write("**Connection details:**")
             st.sidebar.write(f"- Account: `{conn_params.get('account')}`")
             st.sidebar.write(f"- User: `{conn_params.get('user')}`")
             st.sidebar.write(f"- Database: `{conn_params.get('database')}`")
@@ -143,36 +143,36 @@ class SnowflakeConnector:
             st.sidebar.write(f"- Role: `{conn_params.get('role')}`")
 
             # Bouton de connexion
-            if st.sidebar.button("Se connecter", type="primary"):
+            if st.sidebar.button("Connect", type="primary"):
                 try:
                     conn = self.create_connection(conn_params)
                     st.session_state['snowflake_connection'] = conn
-                    st.success(f"✅ Connecté avec succès à {selected_connection}")
+                    st.success(f"✅ Connected successfully to {selected_connection}")
                     self._connection = conn
                     st.rerun()
                 except Exception as conn_error:
-                    st.error(f"❌ Erreur de connexion: {str(conn_error)}")
+                    st.error(f"❌ Connection error: {str(conn_error)}")
                     return None
 
             return None
 
     def get_connection(self):
-        """Retourne la connexion courante"""
+        """Return the current connection"""
         return self._connection
 
     def execute_query(self, query: str, params: tuple = None) -> Optional[pd.DataFrame]:
         """
-        Exécute une requête SQL et retourne un DataFrame
+        Execute a SQL query and return a DataFrame
 
         Args:
-            query: Requête SQL à exécuter
-            params: Paramètres de la requête (optionnel)
+            query: SQL query to execute
+            params: Parameters of the query (optional)
 
         Returns:
-            DataFrame pandas avec les résultats ou None si erreur
+            DataFrame pandas with the results or None if error
         """
         if not self._connection:
-            st.error("❌ Pas de connexion active")
+            st.error("❌ No active connection")
             return None
 
         try:
@@ -182,21 +182,21 @@ class SnowflakeConnector:
             else:
                 cursor.execute(query)
 
-            # Récupérer les résultats
+            # Get the results
             columns = [desc[0] for desc in cursor.description]
             data = cursor.fetchall()
             cursor.close()
 
-            # Créer le DataFrame
+            # Create the DataFrame
             df = pd.DataFrame(data, columns=columns)
 
-            # Normaliser les noms de colonnes en minuscules
+            # Normalize the column names to lowercase
             df.columns = df.columns.str.lower()
 
             return df
 
         except Exception as e:
-            st.error(f"❌ Erreur lors de l'exécution de la requête: {str(e)}")
+            st.error(f"❌ Error when executing the query: {str(e)}")
             return None
 
     def call_cortex_ai(self, prompt: str, model: str = 'claude-3-5-sonnet') -> Optional[str]:
@@ -204,21 +204,21 @@ class SnowflakeConnector:
         Appelle Cortex AI avec un prompt
 
         Args:
-            prompt: Prompt à envoyer à Cortex AI
-            model: Nom du modèle à utiliser (défaut: claude-3-5-sonnet)
+            prompt: Prompt to send to Cortex AI
+            model: Name of the model to use (default: claude-3-5-sonnet)
 
         Returns:
-            Réponse de Cortex AI ou None si erreur
+            Response from Cortex AI or None if error
         """
         if not self._connection:
-            st.error("❌ Pas de connexion active")
+            st.error("❌ No active connection")
             return None
 
         try:
-            # Échapper les apostrophes dans le prompt
+            # Escape the apostrophes in the prompt
             escaped_prompt = prompt.replace("'", "''")
 
-            # Construire la requête Cortex AI
+            # Build the Cortex AI query
             cortex_query = f"""
             SELECT SNOWFLAKE.CORTEX.COMPLETE(
                 '{model}',
@@ -226,7 +226,7 @@ class SnowflakeConnector:
             ) AS response
             """
 
-            # Exécuter la requête
+            # Execute the query
             cursor = self._connection.cursor()
             cursor.execute(cortex_query)
             result = cursor.fetchone()
@@ -235,9 +235,9 @@ class SnowflakeConnector:
             if result and result[0]:
                 return result[0]
             else:
-                st.warning("⚠️ Aucune réponse de Cortex AI")
+                st.warning("⚠️ No response from Cortex AI")
                 return None
 
         except Exception as e:
-            st.error(f"❌ Erreur lors de l'appel à Cortex AI: {str(e)}")
+            st.error(f"❌ Error when calling Cortex AI: {str(e)}")
             return None

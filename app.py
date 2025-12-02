@@ -10,7 +10,7 @@ import pandas as pd
 from snowflake_connector import SnowflakeConnector
 from query_optimizer import QueryOptimizer
 
-# Configuration de la page
+# Page configuration
 st.set_page_config(
     page_title="SQL Query Optimizer",
     page_icon="🔍",
@@ -18,77 +18,78 @@ st.set_page_config(
 )
 
 st.title("🔍 SQL Query Optimizer")
-st.markdown("Analysez et optimisez vos requêtes SQL les plus coûteuses avec l'IA")
+st.markdown("Analyze and optimize your most expensive SQL queries with AI")
+st.markdown("Made with ❤️ by Devoteam Snowflake Partner - December 2025")
 
-# Initialisation de la connexion Snowflake
-# Note: Ne pas cacher cette fonction car elle contient des widgets Streamlit
+# Snowflake connection initialization
+# Note: Do not hide this function because it contains Streamlit widgets
 connector = SnowflakeConnector()
 conn = connector.init_connection()
 
-# Vérifier si la connexion est établie
+# Check if the connection is established
 if conn is None:
-    st.warning("⚠️ Veuillez établir une connexion à Snowflake pour continuer")
+    st.warning("⚠️ Please connect to Snowflake to continue")
     st.stop()
 
-# Mettre à jour la connexion dans le connecteur
+# Update the connection in the connector
 connector._connection = conn
 
-# Initialiser l'optimiseur de requêtes
+# Initialize the query optimizer
 optimizer = QueryOptimizer(connector)
 
-# Interface principale
-st.header("📊 Requêtes les plus coûteuses")
+# Main interface
+st.header("📊 Most expensive queries")
 
 try:
-    # Bouton pour actualiser les données
-    if st.button("🔄 Actualiser la liste des requêtes", type="primary"):
-        # Effacer le cache et recharger
+    # Button to refresh the data
+    if st.button("🔄 Refresh the list of queries", type="primary"):
+        # Clear cache and reload the data
         if 'df_queries' in st.session_state:
             del st.session_state['df_queries']
         if 'ai_analysis' in st.session_state:
             del st.session_state['ai_analysis']
 
-    # Récupérer les requêtes coûteuses
+    # Get the most expensive queries
     if 'df_queries' not in st.session_state:
-        with st.spinner("Chargement des requêtes coûteuses..."):
+        with st.spinner("Loading expensive queries..."):
             df_queries = optimizer.get_expensive_queries()
 
             if df_queries is not None and not df_queries.empty:
-                # Convertir les colonnes numériques
+                # Convert the numeric columns
                 numeric_cols = ['duration_seconds', 'duration_hours', 'cost_factor', 'cnt']
                 for col in numeric_cols:
                     if col in df_queries.columns:
                         df_queries[col] = pd.to_numeric(df_queries[col], errors='coerce')
 
-                # Stocker dans session state
+                # Store in session state
                 st.session_state['df_queries'] = df_queries
             else:
-                st.warning("Aucune requête trouvée dans les 30 derniers jours")
+                st.warning("No queries found in the last 30 days")
                 st.stop()
 
-    # Récupérer les données depuis session state
+    # Get data from session state
     df_queries = st.session_state['df_queries']
 
     if df_queries is not None and not df_queries.empty:
-        # Créer une copie pour l'affichage
+        # Create a copy for display
         display_df = df_queries.copy()
 
-        # Arrondir les valeurs numériques
+        # Round numeric values
         if 'duration_seconds' in display_df.columns:
             display_df['duration_seconds'] = display_df['duration_seconds'].round(2)
         if 'cost_factor' in display_df.columns:
             display_df['cost_factor'] = display_df['cost_factor'].round(2)
 
-        # Convertir les dates
+        # Convert dates
         if 'min_start_time' in display_df.columns:
             display_df['min_start_time'] = pd.to_datetime(display_df['min_start_time'])
         if 'max_end_time' in display_df.columns:
             display_df['max_end_time'] = pd.to_datetime(display_df['max_end_time'])
 
-        # Créer une version simplifiée pour l'affichage
+        # Create a simplified version for display
         table_display_df = display_df[['warehouse_name', 'warehouse_size', 'user_name', 'cnt', 'duration_seconds']].copy()
 
-        # Layout en deux colonnes
+        # Layout in two columns
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -102,8 +103,8 @@ try:
             )
 
         with col_right:
-            st.subheader("💻 Détails SQL")
-            # Afficher les détails SQL si une ligne est sélectionnée
+            st.subheader("💻 SQL details")
+            # Display SQL details if a row is selected
             if event.selection and len(event.selection.rows) > 0:
                 selected_idx = event.selection.rows[0]
                 selected_row = display_df.iloc[selected_idx]
@@ -111,38 +112,38 @@ try:
                 # Métriques complémentaires
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Facteur de coût", f"{selected_row['cost_factor']:.2f}")
+                    st.metric("Cost factor", f"{selected_row['cost_factor']:.2f}")
                 with col2:
                     if pd.notna(selected_row.get('min_start_time')):
-                        st.metric("Première exec.", selected_row['min_start_time'].strftime('%Y-%m-%d %H:%M'))
+                        st.metric("First execution", selected_row['min_start_time'].strftime('%Y-%m-%d %H:%M'))
                 with col3:
                     if pd.notna(selected_row.get('max_end_time')):
-                        st.metric("Dernière exec.", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
+                        st.metric("Last execution", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
 
                 # Afficher le texte SQL
                 if 'sample_query_text' in selected_row and pd.notna(selected_row['sample_query_text']):
                     st.code(selected_row['sample_query_text'], language='sql', line_numbers=True)
                 else:
-                    st.info("Aucun texte SQL disponible pour cette requête")
+                    st.info("No SQL text available for this query")
 
-                # Bouton pour analyser cette requête avec l'IA
-                if st.button("🚀 Optimisation IA", use_container_width=True):
-                    # Utiliser directement les données de selected_row
+                # Button to analyze this query with AI
+                if st.button("🚀 AI optimization", use_container_width=True):
+                    # Use directly the data from selected_row
                     query_text = selected_row['sample_query_text']
                     query_id = selected_row.get('sample_query_id', 'N/A')
 
-                    # Extraire les tables
-                    with st.spinner("Identification des tables utilisées..."):
+                    # Extract tables
+                    with st.spinner("Identifying used tables..."):
                         tables = optimizer.extract_tables_from_sql(query_text)
 
                     if tables:
-                        # Récupérer les métadonnées des tables
-                        with st.spinner("Récupération des métadonnées des tables..."):
+                        # Get table metadata
+                        with st.spinner("Retrieving table metadata..."):
                             tables_metadata = {}
                             for table in tables:
                                 tables_metadata[table] = optimizer.get_table_metadata(table)
 
-                            # Préparer les métadonnées d'exécution à partir de selected_row
+                            # Prepare execution metadata from selected_row
                             execution_metadata = {
                                 'query_id': query_id,
                                 'duration_seconds': float(selected_row['duration_seconds']),
@@ -154,15 +155,15 @@ try:
                                 'max_end_time': str(selected_row['max_end_time']) if pd.notna(selected_row.get('max_end_time')) else None,
                             }
 
-                            # Appel à Cortex AI pour optimisation
-                            with st.spinner("Analyse par Cortex AI (Claude Sonnet)..."):
+                            # Call Cortex AI for optimization
+                            with st.spinner("Analyzing with Cortex AI (Claude Sonnet)..."):
                                 optimization_suggestions = optimizer.optimize_query(
                                     query_text,
                                     execution_metadata,
                                     tables_metadata
                                 )
 
-                                # Stocker les résultats dans session state
+                                # Store results in session state
                                 st.session_state['ai_analysis'] = {
                                     'tables': tables,
                                     'suggestions': optimization_suggestions
@@ -173,27 +174,27 @@ try:
                             'suggestions': None
                         }
             else:
-                st.info("👈 Sélectionnez une ligne dans le tableau pour voir le code SQL")
+                st.info("👈 Select a row in the table to see the SQL code")
 
-        # Afficher les résultats de l'analyse IA en-dessous des deux colonnes
+        # Display AI analysis results below the two columns
         if 'ai_analysis' in st.session_state and st.session_state['ai_analysis'] is not None:
             st.divider()
-            st.header("🤖 Analyse IA")
+            st.header("🤖 AI analysis")
 
             analysis = st.session_state['ai_analysis']
 
             if analysis['tables']:
-                st.subheader("📋 Tables identifiées")
+                st.subheader("📋 Identified tables")
                 st.write(", ".join(analysis['tables']))
 
             if analysis['suggestions']:
-                st.subheader("✨ Suggestions d'optimisation")
+                st.subheader("✨ Optimization suggestions")
                 st.markdown(analysis['suggestions'])
             elif analysis['tables'] is not None and len(analysis['tables']) == 0:
-                st.warning("Aucune table identifiée dans la requête SQL.")
+                st.warning("No table identified in the SQL query.")
             elif analysis['suggestions'] is None and analysis['tables']:
-                st.warning("Impossible d'obtenir des suggestions d'optimisation. Vérifiez que Cortex AI est activé dans votre compte Snowflake.")
+                st.warning("Impossible to get optimization suggestions. Check if Cortex AI is enabled in your Snowflake account.")
 
 except Exception as e:
-    st.error(f"Erreur lors de l'exécution de l'application: {str(e)}")
+    st.error(f"Error during application execution: {str(e)}")
     st.exception(e)

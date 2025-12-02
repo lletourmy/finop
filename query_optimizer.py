@@ -339,57 +339,57 @@ class QueryOptimizer:
         tables_metadata: Dict[str, Dict[str, Any]]
     ) -> str:
         """
-        Construit le prompt pour l'optimisation de requête
+        Build the prompt for query optimization
 
         Args:
-            query_text: Texte de la requête SQL
-            execution_metadata: Métadonnées d'exécution
-            tables_metadata: Métadonnées des tables
+            query_text: Text of the SQL query
+            execution_metadata: Execution metadata
+            tables_metadata: Tables metadata
 
         Returns:
-            Prompt formaté pour Cortex AI
+            Prompt formatted for Cortex AI
         """
-        prompt = f"""Tu es un expert en optimisation de requêtes SQL sur Snowflake.
+        prompt = f"""You are an expert in SQL query optimization on Snowflake.
 
-Analyse la requête SQL suivante et fournis des suggestions d'optimisation détaillées.
+Analyze the following SQL query and provide detailed optimization suggestions.
 
-## Requête SQL à analyser :
+## SQL query to analyze:
 
 ```sql
 {query_text}
 ```
 
-## Métadonnées d'exécution :
+## Execution metadata:
 
 {json.dumps(execution_metadata, indent=2, default=str)}
 
-## Métadonnées des tables utilisées :
+## Metadata of tables used:
 
 {json.dumps(tables_metadata, indent=2, default=str)}
 
-## Instructions :
+## Instructions:
 
-Fournis une analyse complète avec :
+Provide a complete analysis with:
 
-1. **Optimisations SQL** :
-   - Suggestions de réécriture de la requête
-   - Amélioration des JOINs
-   - Optimisation des WHERE clauses
-   - Utilisation d'index ou de clustering keys
-   - Suggestions de CTEs ou de sous-requêtes
+1. **SQL Optimizations**:
+   - Query rewrite suggestions
+   - JOIN improvements
+   - WHERE clause optimization
+   - Use of indexes or clustering keys
+   - CTE or subquery suggestions
 
-2. **Optimisations liées au Warehouse** :
-   - Taille de warehouse recommandée
-   - Utilisation de multi-clustering
-   - Auto-suspend et auto-resume
-   - Gestion de la concurrence
+2. **Warehouse-related optimizations**:
+   - Recommended warehouse size
+   - Use of multi-clustering
+   - Auto-suspend and auto-resume
+   - Concurrency management
 
-3. **Optimisations générales** :
-   - Amélioration du temps d'exécution
-   - Réduction des coûts
-   - Meilleures pratiques Snowflake
+3. **General optimizations**:
+   - Execution time improvement
+   - Cost reduction
+   - Snowflake best practices
 
-Formatte ta réponse de manière claire et structurée avec des sections bien définies."""
+Format your response clearly and structured with well-defined sections."""
 
         return prompt
 
@@ -401,21 +401,21 @@ Formatte ta réponse de manière claire et structurée avec des sections bien d�
         model: str = 'claude-3-5-sonnet'
     ) -> Optional[str]:
         """
-        Optimise une requête SQL en utilisant Cortex AI
+        Optimize a SQL query using Cortex AI
 
         Args:
-            query_text: Texte de la requête SQL
-            execution_metadata: Métadonnées d'exécution
-            tables_metadata: Métadonnées des tables
-            model: Modèle Cortex AI à utiliser
+            query_text: Text of the SQL query
+            execution_metadata: Execution metadata
+            tables_metadata: Tables metadata
+            model: Cortex AI model to use
 
         Returns:
-            Suggestions d'optimisation ou None si erreur
+            Optimization suggestions or None if error
         """
-        # Construire le prompt
+        # Build the prompt
         prompt = self.build_optimization_prompt(query_text, execution_metadata, tables_metadata)
 
-        # Appeler Cortex AI
+        # Call Cortex AI
         response = self.connector.call_cortex_ai(prompt, model)
 
         return response
