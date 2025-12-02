@@ -60,6 +60,7 @@ class SnowflakeConnector:
         Returns:
             Wrapper de connexion Snowflake
         """
+        st.session_state['warehouse_name'] = _conn_params.get('warehouse')
         conn = snowflake.connector.connect(
             account=_conn_params.get('account'),
             user=_conn_params.get('user'),
@@ -103,7 +104,10 @@ class SnowflakeConnector:
             if 'sis_mode_confirmed' not in st.session_state:
                 st.success("✅ Connected via Streamlit in Snowflake")
                 st.session_state['sis_mode_confirmed'] = True
+            
             self._connection = conn
+            del st.session_state['warehouse_name']
+            
             return conn
         except Exception as e:
             # Fallback pour développement local
@@ -144,15 +148,13 @@ class SnowflakeConnector:
 
             # Bouton de connexion
             if st.sidebar.button("Connect", type="primary"):
-                try:
-                    conn = self.create_connection(conn_params)
-                    st.session_state['snowflake_connection'] = conn
-                    st.success(f"✅ Connected successfully to {selected_connection}")
-                    self._connection = conn
-                    st.rerun()
-                except Exception as conn_error:
-                    st.error(f"❌ Connection error: {str(conn_error)}")
-                    return None
+                conn = self.create_connection(conn_params)
+                self._connection = conn
+                
+                st.session_state['snowflake_connection'] = conn
+                self.execute_query("SELECT 1")
+                st.success(f"✅ Connected successfully to {selected_connection}")
+                st.rerun()
 
             return None
 
@@ -175,29 +177,31 @@ class SnowflakeConnector:
             st.error("❌ No active connection")
             return None
 
-        try:
-            cursor = self._connection.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
+        cursor = self._connection.cursor()
+        #if 'warehouse_name' in st.session_state:
+        #    warehouse_name = st.session_state['warehouse_name']
+        #    #st.write(f"Using warehouse : {warehouse_name}")
+        #    cursor.execute(f"USE WAREHOUSE {warehouse_name}")
+        #    #st.write(f"Warehouse set to : {warehouse_name}")
+        
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
 
-            # Get the results
-            columns = [desc[0] for desc in cursor.description]
-            data = cursor.fetchall()
-            cursor.close()
+        # Get the results
+        columns = [desc[0] for desc in cursor.description]
+        data = cursor.fetchall()
+        cursor.close()
 
-            # Create the DataFrame
-            df = pd.DataFrame(data, columns=columns)
+        # Create the DataFrame
+        df = pd.DataFrame(data, columns=columns)
 
-            # Normalize the column names to lowercase
-            df.columns = df.columns.str.lower()
+        # Normalize the column names to lowercase
+        df.columns = df.columns.str.lower()
 
-            return df
+        return df
 
-        except Exception as e:
-            st.error(f"❌ Error when executing the query: {str(e)}")
-            return None
 
     def call_cortex_ai(self, prompt: str, model: str = 'claude-3-5-sonnet') -> Optional[str]:
         """
@@ -217,7 +221,7 @@ class SnowflakeConnector:
         try:
             # Escape the apostrophes in the prompt
             escaped_prompt = prompt.replace("'", "''")
-
+            #st.warning(escaped_prompt)
             # Build the Cortex AI query
             cortex_query = f"""
             SELECT SNOWFLAKE.CORTEX.COMPLETE(

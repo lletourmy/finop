@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("🔍 SQL Query Optimizer")
-st.markdown("Analyze and optimize your most expensive SQL queries with AI")
+st.markdown("Analyze and optimize your most expensive Snowflake SQL queries with AI")
 st.markdown("Made with ❤️ by Devoteam Snowflake Partner - December 2025")
 
 # Snowflake connection initialization
@@ -41,18 +41,15 @@ optimizer = QueryOptimizer(connector)
 st.header("📊 Most expensive queries")
 
 try:
+    days = st.slider("Select the number of days to analyze", min_value=1, max_value=30, value=15, step=1)
     # Button to refresh the data
     if st.button("🔄 Refresh the list of queries", type="primary"):
         # Clear cache and reload the data
-        if 'df_queries' in st.session_state:
-            del st.session_state['df_queries']
         if 'ai_analysis' in st.session_state:
             del st.session_state['ai_analysis']
 
-    # Get the most expensive queries
-    if 'df_queries' not in st.session_state:
         with st.spinner("Loading expensive queries..."):
-            df_queries = optimizer.get_expensive_queries()
+            df_queries = optimizer.get_expensive_queries(days)
 
             if df_queries is not None and not df_queries.empty:
                 # Convert the numeric columns
@@ -65,10 +62,11 @@ try:
                 st.session_state['df_queries'] = df_queries
             else:
                 st.warning("No queries found in the last 30 days")
-                st.stop()
 
-    # Get data from session state
-    df_queries = st.session_state['df_queries']
+    if 'df_queries' in st.session_state:
+        df_queries = st.session_state.df_queries
+    else:
+        df_queries = None
 
     if df_queries is not None and not df_queries.empty:
         # Create a copy for display
@@ -87,10 +85,10 @@ try:
             display_df['max_end_time'] = pd.to_datetime(display_df['max_end_time'])
 
         # Create a simplified version for display
-        table_display_df = display_df[['warehouse_name', 'warehouse_size', 'user_name', 'cnt', 'duration_seconds']].copy()
+        table_display_df = display_df[['warehouse_name', 'warehouse_size', 'user_name', 'cnt', 'cost_factor']].copy()
 
         # Layout in two columns
-        col_left, col_right = st.columns([1, 1])
+        col_left, col_right = st.columns([3, 5])
 
         with col_left:
             event = st.dataframe(
@@ -119,7 +117,12 @@ try:
                 with col3:
                     if pd.notna(selected_row.get('max_end_time')):
                         st.metric("Last execution", selected_row['max_end_time'].strftime('%Y-%m-%d %H:%M'))
-
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Database", selected_row['database_name'])
+                with col2:
+                    st.metric("Schema", selected_row['schema_name'])
+                
                 # Afficher le texte SQL
                 if 'sample_query_text' in selected_row and pd.notna(selected_row['sample_query_text']):
                     st.code(selected_row['sample_query_text'], language='sql', line_numbers=True)
@@ -141,7 +144,7 @@ try:
                         with st.spinner("Retrieving table metadata..."):
                             tables_metadata = {}
                             for table in tables:
-                                tables_metadata[table] = optimizer.get_table_metadata(table)
+                                tables_metadata[table] = optimizer.get_table_metadata(db_name=selected_row['database_name'], schema_name=selected_row['schema_name'], table_name=table)
 
                             # Prepare execution metadata from selected_row
                             execution_metadata = {
