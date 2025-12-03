@@ -97,7 +97,7 @@ try:
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
-                height=None  # Display all rows without pagination
+                height="stretch"  # Display full height; alternatively, use an integer like 400
             )
 
         with col_right:
