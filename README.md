@@ -13,7 +13,7 @@ Streamlit application to automatically analyze and optimize the most expensive S
 
 ---
 
-## Overview
+##  Overview
 
 ### Features
 
@@ -83,13 +83,6 @@ Streamlit application to automatically analyze and optimize the most expensive S
 #### Using Git Repository Integration (Recommended)
 
 Snowflake provides native Git repository integration, allowing you to synchronize your remote Git repository with Snowflake and deploy Streamlit apps directly from Git. This enables version control, collaborative development, and streamlined deployment workflows.
-
-**Supported Git Platforms:**
-- GitHub
-- GitLab
-- BitBucket
-- Azure DevOps
-- AWS CodeCommit
 
 **Prerequisites:**
 - A remote Git repository (e.g., GitHub: `https://github.com/lletourmy/finop`)
