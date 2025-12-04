@@ -42,26 +42,61 @@ st.header("📊 Most expensive queries")
 
 try:
     days = st.slider("Select the number of days to analyze", min_value=1, max_value=30, value=15, step=1)
-    # Button to refresh the data
-    if st.button("🔄 Refresh the list of queries", type="primary"):
-        # Clear cache and reload the data
-        if 'ai_analysis' in st.session_state:
-            del st.session_state['ai_analysis']
+    
+    # Buttons layout: refresh and logout side by side
+    col_refresh, col_logout = st.columns([1, 1])
+    
+    with col_refresh:
+        # Button to refresh the data
+        if st.button("🔄 Refresh the list of queries", type="primary", use_container_width=True):
+            # Clear cache and reload the data
+            if 'ai_analysis' in st.session_state:
+                del st.session_state['ai_analysis']
 
-        with st.spinner("Loading expensive queries..."):
-            df_queries = optimizer.get_expensive_queries(days)
+            with st.spinner("Loading expensive queries..."):
+                df_queries = optimizer.get_expensive_queries(days)
 
-            if df_queries is not None and not df_queries.empty:
-                # Convert the numeric columns
-                numeric_cols = ['duration_seconds', 'duration_hours', 'cost_factor', 'cnt']
-                for col in numeric_cols:
-                    if col in df_queries.columns:
-                        df_queries[col] = pd.to_numeric(df_queries[col], errors='coerce')
+                if df_queries is not None and not df_queries.empty:
+                    # Convert the numeric columns
+                    numeric_cols = ['duration_seconds', 'duration_hours', 'cost_factor', 'cnt']
+                    for col in numeric_cols:
+                        if col in df_queries.columns:
+                            df_queries[col] = pd.to_numeric(df_queries[col], errors='coerce')
 
-                # Store in session state
-                st.session_state['df_queries'] = df_queries
-            else:
-                st.warning("No queries found in the last 30 days")
+                    # Store in session state
+                    st.session_state['df_queries'] = df_queries
+                else:
+                    st.warning("No queries found in the last 30 days")
+    
+    with col_logout:
+        # Button to logout and disconnect from Snowflake
+        if st.button("🚪 Logout", use_container_width=True):
+            # Close the connection if it exists
+            if connector._connection:
+                try:
+                    connector._connection.close()
+                except:
+                    pass
+            
+            # Clear all session state related to connection and data
+            keys_to_clear = [
+                'snowflake_connection',
+                'warehouse_name',
+                'sis_mode_confirmed',
+                'local_mode_shown',
+                'df_queries',
+                'ai_analysis',
+                'connection_selector'
+            ]
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
+            
+            # Reset the connector
+            connector._connection = None
+            
+            # Rerun to return to initial state
+            st.rerun()
 
     if 'df_queries' in st.session_state:
         df_queries = st.session_state.df_queries
@@ -97,7 +132,7 @@ try:
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
-                height=None  # Display all rows without pagination
+                height="auto" if st.version.startswith("1.49") else None # Display all rows without pagination
             )
 
         with col_right:
