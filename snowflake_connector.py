@@ -95,8 +95,19 @@ class SnowflakeConnector:
         """
         # Vérifier si déjà connecté en mode local
         if 'snowflake_connection' in st.session_state:
-            self._connection = st.session_state['snowflake_connection']
-            return self._connection
+            existing_conn = st.session_state['snowflake_connection']
+            # Verify the connection is still valid
+            try:
+                # Try to execute a simple query to check if connection is alive
+                cursor = existing_conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                self._connection = existing_conn
+                return self._connection
+            except Exception:
+                # Connection is closed or invalid, remove it from session state
+                del st.session_state['snowflake_connection']
+                # Continue to create a new connection
 
         # Tenter d'abord la connexion Streamlit in Snowflake
         try:
