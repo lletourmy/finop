@@ -380,11 +380,5 @@ User interface and component orchestration.
 
 ---
 
-## License
-
-This project is licensed under the MIT License.
-
----
-
 **Last updated:** December 2025  
 **Author:** Laurent Letourmy
