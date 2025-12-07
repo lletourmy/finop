@@ -143,14 +143,6 @@ CREATE STREAMLIT sql_query_optimizer
   QUERY_WAREHOUSE = 'YOUR_WAREHOUSE';
 ```
 
-Or specify a specific branch or tag:
-```sql
-CREATE STREAMLIT sql_query_optimizer
-  ROOT_LOCATION = '@finopt_repo/branches/main'
-  MAIN_FILE = 'app.py'
-  QUERY_WAREHOUSE = 'YOUR_WAREHOUSE';
-```
-
 **Step 4: Grant Permissions**
 
 ```sql
@@ -168,27 +160,6 @@ ALTER GIT REPOSITORY finopt_repo FETCH;
 ```
 
 Then recreate or alter your Streamlit app to use the updated files. Streamlit apps automatically pick up changes from the Git repository clone.
-
-**Benefits of Git Integration:**
-- ✅ Native version control integration
-- ✅ Automatic synchronization with remote repository
-- ✅ Support for branches and tags
-- ✅ Collaborative development workflow
-- ✅ CI/CD pipeline support
-- ✅ No manual file uploads required
-
-**Viewing Repository Contents:**
-
-```sql
--- List branches
-SHOW GIT BRANCHES IN finopt_repo;
-
--- List tags
-SHOW GIT TAGS IN finopt_repo;
-
--- View repository details
-DESCRIBE GIT REPOSITORY finopt_repo;
-```
 
 **References:**
 - [Snowflake Git Repository Overview](https://docs.snowflake.com/en/developer-guide/git/git-overview)
@@ -416,4 +387,4 @@ This project is licensed under the MIT License.
 ---
 
 **Last updated:** December 2025  
-**Author:** Laurent Le Tourmy
+**Author:** Laurent Letourmy
